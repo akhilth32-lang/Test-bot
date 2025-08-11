@@ -1,8 +1,22 @@
 # PART 1/4
 import sys
 import types
+import os
+import io
+import requests
+import traceback
+import discord
+import asyncio
+from discord.ext import commands, tasks
+from discord import app_commands, ui, File
+from datetime import datetime, timedelta
+from pymongo import MongoClient
+from keep_alive import keep_alive  # keep-alive server you already use
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
-# ✅ Bypass for audioop crashes (keeps your original bypass)
+# ✅ audioop crash bypass (unchanged)
 sys.modules['audioop'] = types.ModuleType('audioop')
 sys.modules['audioop'].mul = lambda *args, **kwargs: None
 sys.modules['audioop'].add = lambda *args, **kwargs: None
@@ -14,27 +28,18 @@ sys.modules['audioop'].avgpp = lambda *args, **kwargs: 0
 sys.modules['audioop'].rms = lambda *args, **kwargs: 0
 sys.modules['audioop'].cross = lambda *args, **kwargs: 0
 
-import discord, asyncio, requests, os, traceback, io
-from discord.ext import commands, tasks
-from discord import app_commands, ui, File
-from datetime import datetime, timedelta, timezone
-from pymongo import MongoClient
-from keep_alive import keep_alive  # ✅ Using separate keep_alive file
-import matplotlib
-matplotlib.use('Agg')  # use non-interactive backend for servers
-import matplotlib.pyplot as plt
-
-keep_alive()  # ✅ Start Flask keepalive server
+keep_alive()  # start keepalive server (unchanged)
 
 # ======================= CONFIG =======================
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-MONGO_URI = os.getenv("MONGO_URI")            # existing DB (do not touch)
-NEW_MONGO_URI = os.getenv("NEW_MONGO_URI")    # new DB (the one we'll use if present)
-NEW_DB_NAME = os.getenv("NEW_DB_NAME", "coc_bot_v2")  # default new DB name
+MONGO_URI = os.getenv("MONGO_URI")           # original DB (left untouched)
+NEW_MONGO_URI = os.getenv("NEW_MONGO_URI")   # NEW DB to use if provided
+NEW_DB_NAME = os.getenv("NEW_DB_NAME", "coc_bot_v2")
 
-PROXY_URL = "https://clash-of-clans-api-4bi0.onrender.com"
+PROXY_URL = os.getenv("PROXY_URL", "https://clash-of-clans-api-4bi0.onrender.com")
 
-LEADERBOARD_PAGE_SIZE = 10
+LEADERBOARD_PAGE_SIZE = int(os.getenv("LEADERBOARD_PAGE_SIZE", "10"))
+
 EMOJI_TROPHY = "<:trophy:1400826511799484476>"
 EMOJI_OFFENSE = "<:Offence:1400826628099014676>"
 EMOJI_DEFENSE = "<:emoji_9:1252010455694835743>"
@@ -43,21 +48,22 @@ intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 # PART 2/4
 # ======================= MONGO INIT =======================
-# Use NEW_MONGO_URI if present (so we don't touch the old DB unless you want to)
+# Use NEW_MONGO_URI if present (so your old DB remains untouched)
 if NEW_MONGO_URI:
     mongo_client = MongoClient(NEW_MONGO_URI)
-    print("🔁 Using NEW_MONGO_URI (isolated new database).")
+    db = mongo_client[NEW_DB_NAME]
+    print("🔁 Using NEW_MONGO_URI and DB:", NEW_DB_NAME)
 else:
     mongo_client = MongoClient(MONGO_URI)
-    print("⚠️ NEW_MONGO_URI not set: falling back to MONGO_URI (original DB).")
+    db = mongo_client["coc_bot"]
+    print("⚠️ NEW_MONGO_URI not set. Using original DB 'coc_bot'.")
 
-db = mongo_client[NEW_DB_NAME if NEW_MONGO_URI else "coc_bot"]
 players_col = db["players"]
 backup_col = db["backup_players"]
 daily_stats_col = db["daily_stats"]
 players_col.create_index([("trophies", -1)])
 
-# ======================= DB HELPERS =======================
+# ======================= DB HELPERS (unchanged semantics) =======================
 def add_or_update_player(discord_id, tag, data):
     update = {
         "discord_id": discord_id,
@@ -94,18 +100,15 @@ def fetch_player_data(tag: str):
     tag_encoded = tag if tag.startswith("#") else f"#{tag}"
     tag_encoded = tag_encoded.replace("#", "%23")
     url = f"{PROXY_URL}/player/{tag_encoded}"
-
     try:
         r = requests.get(url, timeout=10)
         if r.status_code != 200:
             print(f"❌ HTTP {r.status_code} for {tag} -> {r.text}")
             return None
-
         data = r.json()
         if not data or "name" not in data or "trophies" not in data:
             print(f"⚠️ Incomplete data for {tag} -> {data}")
             return None
-
         return {
             "name": data["name"],
             "trophies": data["trophies"],
@@ -113,7 +116,6 @@ def fetch_player_data(tag: str):
             "attacks": len(data.get("attackLog", [])),
             "defenses": len(data.get("defenseLog", []))
         }
-
     except Exception as e:
         print(f"❌ Exception for {tag}: {e}")
         return None
@@ -121,26 +123,54 @@ def fetch_player_data(tag: str):
 async def async_fetch_player_data(tag):
     return await asyncio.to_thread(fetch_player_data, tag)
 
-# ======================= SEASON INFO HELPERS =======================
-# Tries to fetch season start/end info from proxy (if supported). Fails safely.
-def fetch_season_info():
-    try:
-        url = f"{PROXY_URL}/season"  # best-effort endpoint; proxy should return season metadata if available
-        r = requests.get(url, timeout=8)
-        if r.status_code != 200:
-            return None
-        data = r.json()
-        # expected structure: {"start": "2025-08-01", "end": "2025-08-28"} - this is best-effort
-        return data
-    except Exception:
+# ======================= SEASON INFO (robust) =======================
+def _parse_date_str(s):
+    if not s:
         return None
+    # accept formats: YYYY-MM-DD, YYYY-MM-DDTHH:MM:SS, with optional Z
+    try:
+        s2 = s.strip()
+        if s2.endswith("Z"):
+            s2 = s2[:-1]
+        # if no time, fromisoformat still works
+        return datetime.fromisoformat(s2).date()
+    except Exception:
+        # last fallback try date only
+        try:
+            return datetime.strptime(s.split("T")[0], "%Y-%m-%d").date()
+        except Exception:
+            return None
+
+def fetch_season_info():
+    # Try a few endpoints on proxy that may contain season info. This is best-effort.
+    endpoints = ["/season", "/seasons/legend", "/legend/season", "/seasons/current"]
+    for ep in endpoints:
+        try:
+            url = PROXY_URL.rstrip("/") + ep
+            r = requests.get(url, timeout=6)
+            if r.status_code != 200:
+                continue
+            data = r.json()
+            # try common shapes
+            # shape 1: {"start":"2025-08-01","end":"2025-08-28"}
+            if isinstance(data, dict) and "start" in data and "end" in data:
+                return {"start": _parse_date_str(data["start"]), "end": _parse_date_str(data["end"])}
+            # shape 2: {"season":{"start":"...","end":"..."}}
+            if isinstance(data, dict) and "season" in data and isinstance(data["season"], dict):
+                return {"start": _parse_date_str(data["season"].get("start")), "end": _parse_date_str(data["season"].get("end"))}
+            # shape 3: array of seasons -> pick current (first) element
+            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict) and "start" in data[0] and "end" in data[0]:
+                return {"start": _parse_date_str(data[0]["start"]), "end": _parse_date_str(data[0]["end"])}
+        except Exception:
+            continue
+    return None
 
 def compute_season_day():
     season = fetch_season_info()
-    if season and "start" in season and "end" in season:
+    if season and season.get("start") and season.get("end"):
+        start = season["start"]
+        end = season["end"]
         try:
-            start = datetime.fromisoformat(season["start"]).date()
-            end = datetime.fromisoformat(season["end"]).date()
             total = (end - start).days + 1
             today_ist = (datetime.utcnow() + timedelta(hours=5, minutes=30)).date()
             day_num = (today_ist - start).days + 1
@@ -151,24 +181,19 @@ def compute_season_day():
             return day_num, total
         except Exception:
             pass
-    # Fallback: assume 28-day season and use SEASON_START_DATE if provided
+    # fallback: use env SEASON_START_DATE or assume 28 days
     fallback_len = int(os.getenv("FALLBACK_SEASON_LENGTH", "28"))
-    start_str = os.getenv("SEASON_START_DATE")  # optional "YYYY-MM-DD"
+    start_str = os.getenv("SEASON_START_DATE")
     if start_str:
-        try:
-            start = datetime.fromisoformat(start_str).date()
+        s = _parse_date_str(start_str)
+        if s:
             today_ist = (datetime.utcnow() + timedelta(hours=5, minutes=30)).date()
-            day_num = (today_ist - start).days + 1
-            if day_num < 1:
-                day_num = 1
-            if day_num > fallback_len:
-                day_num = fallback_len
+            day_num = (today_ist - s).days + 1
+            if day_num < 1: day_num = 1
+            if day_num > fallback_len: day_num = fallback_len
             return day_num, fallback_len
-        except Exception:
-            pass
-    # final fallback
     return 1, fallback_len
-  # PART 3/4
+    # PART 3/4
 # ======================= BACKGROUND TASKS =======================
 last_reset_date = None
 last_backup_date = None
@@ -191,6 +216,7 @@ async def update_players_data():
 
             data = await async_fetch_player_data(tag)
             if data:
+                # traditional delta logic (same as before) but we will also keep logs for accurate counts
                 delta = data["trophies"] - trophies
                 if delta > 0:
                     off_t += delta
@@ -212,15 +238,115 @@ async def update_players_data():
             else:
                 print(f"❌ Failed: {tag}")
         except Exception as e:
-            print(f"❌ Error updating {player.get('player_tag', '<unknown>')}: {e}")
+            print(f"❌ Error updating {player.get('player_tag','<unknown>')}: {e}")
     print("✅ Update finished!")
+
+@tasks.loop(minutes=1)
+async def backup_leaderboard():
+    """
+    Trigger at 10:25 AM IST: snapshot all players and create a daily_stats doc
+    """
+    global last_backup_date
+    now = datetime.utcnow() + timedelta(hours=5, minutes=30)  # IST
+    if now.hour == 10 and now.minute == 25 and last_backup_date != now.date():
+        players = list(players_col.find({}))
+        if players:
+            try:
+                # backup players snapshot (clean _id)
+                backup_col.delete_many({})
+                cleaned = []
+                for p in players:
+                    p_copy = p.copy()
+                    p_copy.pop("_id", None)
+                    cleaned.append(p_copy)
+                if cleaned:
+                    backup_col.insert_many(cleaned)
+
+                # create daily_stats doc
+                season_day, season_len = compute_season_day()
+                stats_doc = {
+                    "date": now.date().isoformat(),
+                    "season_day": season_day,
+                    "season_len": season_len,
+                    "players": []
+                }
+
+                # For accurate attack/defense counts & trophies, fetch logs via proxy if available.
+                # Best-effort: if proxy provides attack/defense info per player for today's period, use it.
+                for p in players:
+                    tag = p.get("player_tag")
+                    start_t = p.get("prev_trophies", p.get("trophies", 0))
+                    end_t = p.get("trophies", 0)
+                    # default placeholders
+                    off_attacks = p.get("offense_attacks", 0)
+                    off_trophies = p.get("offense_trophies", 0)
+                    def_defenses = p.get("defense_defenses", 0)
+                    def_trophies = p.get("defense_trophies", 0)
+
+                    # Try to get detailed logs for the player from proxy (/player/{tag}/logs or /player/{tag})
+                    try:
+                        t_enc = tag if tag.startswith("#") else f"#{tag}"
+                        t_enc = t_enc.replace("#", "%23")
+                        url = f"{PROXY_URL}/player/{t_enc}"
+                        r = requests.get(url, timeout=8)
+                        if r.status_code == 200:
+                            pdata = r.json()
+                            # many proxies include attackLog/defenseLog; we'll sum trophies and count entries
+                            a_log = pdata.get("attackLog", [])
+                            d_log = pdata.get("defenseLog", [])
+                            # Sum trophies change from logs if available (best-effort)
+                            total_off_t = 0
+                            total_off_count = 0
+                            for a in a_log:
+                                # some proxies include 'trophyChange' or similar
+                                tc = a.get("trophyChange")
+                                if tc is None:
+                                    # try 'trophies' diff heuristics (skip)
+                                    continue
+                                total_off_t += max(0, tc)  # only positive for offense
+                                total_off_count += 1
+                            total_def_t = 0
+                            total_def_count = 0
+                            for d in d_log:
+                                tc = d.get("trophyChange")
+                                if tc is None:
+                                    continue
+                                # defense trophyChange is often negative; store magnitude
+                                total_def_t += abs(min(0, tc))
+                                total_def_count += 1
+                            # prefer the log-derived numbers when present
+                            if total_off_count > 0:
+                                off_attacks = total_off_count
+                                off_trophies = total_off_t
+                            if total_def_count > 0:
+                                def_defenses = total_def_count
+                                def_trophies = total_def_t
+                    except Exception:
+                        pass
+
+                    stats_doc["players"].append({
+                        "player_tag": tag,
+                        "name": p.get("name"),
+                        "start_trophies": start_t,
+                        "end_trophies": end_t,
+                        "delta": end_t - start_t,
+                        "offense_trophies": off_trophies,
+                        "offense_attacks": off_attacks,
+                        "defense_trophies": def_trophies,
+                        "defense_defenses": def_defenses
+                    })
+
+                daily_stats_col.insert_one(stats_doc)
+                last_backup_date = now.date()
+                print(f"💾 Backup & daily_stats saved with {len(stats_doc['players'])} players (10:25 AM IST)")
+            except Exception as e:
+                print("❌ Error during backup_leaderboard:", e, traceback.format_exc())
 
 @tasks.loop(minutes=1)
 async def reset_offense_defense():
     global last_reset_date
     now = datetime.utcnow() + timedelta(hours=5, minutes=30)  # IST
     if now.hour == 10 and now.minute == 30 and last_reset_date != now.date():
-        # Reset daily counters (same behavior)
         players_col.update_many({}, {
             "$set": {
                 "offense_trophies": 0,
@@ -231,109 +357,129 @@ async def reset_offense_defense():
         })
         last_reset_date = now.date()
         print("🔁 Daily offense/defense reset done (10:30 AM IST)")
-
-@tasks.loop(minutes=1)
-async def backup_leaderboard():
-    """
-    At 10:25 AM IST: take snapshot of players, create daily_stats doc and backup players collection.
-    This runs every minute but triggers only at 10:25.
-    """
-    global last_backup_date
-    now = datetime.utcnow() + timedelta(hours=5, minutes=30)  # IST
-    if now.hour == 10 and now.minute == 25 and last_backup_date != now.date():
-        players = list(players_col.find({}))
-        if players:
-            # Save entire players snapshot into backup collection (clear and insert)
-            try:
-                backup_col.delete_many({})
-                # remove Mongo ObjectIds in snapshots to avoid serialize issues
-                cleaned = []
-                for p in players:
-                    p_copy = p.copy()
-                    p_copy.pop("_id", None)
-                    cleaned.append(p_copy)
-                if cleaned:
-                    backup_col.insert_many(cleaned)
-
-                # Create structured daily_stats document for this day
-                season_day, season_len = compute_season_day()
-                stats_doc = {
-                    "date": now.date().isoformat(),
-                    "season_day": season_day,
-                    "season_len": season_len,
-                    "players": []
-                }
-                for p in players:
-                    start_t = p.get("prev_trophies", p.get("trophies", 0))
-                    end_t = p.get("trophies", 0)
-                    stats_doc["players"].append({
-                        "player_tag": p.get("player_tag"),
-                        "name": p.get("name"),
-                        "start_trophies": start_t,
-                        "end_trophies": end_t,
-                        "delta": end_t - start_t,
-                        "offense_trophies": p.get("offense_trophies", 0),
-                        "offense_attacks": p.get("offense_attacks", 0),
-                        "defense_trophies": p.get("defense_trophies", 0),
-                        "defense_defenses": p.get("defense_defenses", 0)
-                    })
-
-                # Insert into daily_stats collection
-                daily_stats_col.insert_one(stats_doc)
-                last_backup_date = now.date()
-                print(f"💾 Backup & daily_stats saved with {len(stats_doc['players'])} players (10:25 AM IST)")
-
-            except Exception as e:
-                print(f"❌ Error during backup_leaderboard: {e}")
-              # PART 4/4
+        # PART 4/4
 # ======================= UI LEADERBOARD =======================
 class PlayerSelect(ui.Select):
     def __init__(self, players):
         options = []
         for p in players:
-            # Display name as "Name | #TAG" (short)
-            label = f"{p.get('name', 'Unknown')}"
+            label = f"{p.get('name','Unknown')}"
             value = p.get('player_tag')
-            # limit label length
             if len(label) > 80:
                 label = label[:77] + "..."
             options.append(discord.SelectOption(label=label, value=value))
-
-        super().__init__(placeholder="Select player to view today's saved stats...", min_values=1, max_values=1, options=options)
+        super().__init__(placeholder="Select player to view today's stats...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
         tag = self.values[0]
-        # Fetch latest daily_stats document
+        tag_upper = tag.upper()
+
+        # Try to fetch the latest daily_stats document
         last_doc = daily_stats_col.find_one(sort=[("date", -1)])
-        if not last_doc:
-            await interaction.response.send_message("❌ No daily stats available yet.", ephemeral=True)
-            return
+        player_doc = None
+        if last_doc:
+            player_doc = next((p for p in last_doc.get("players", []) if (p.get("player_tag","").upper() == tag_upper)), None)
 
-        player_doc = next((p for p in last_doc.get("players", []) if p.get("player_tag", "").upper() == tag.upper()), None)
+        # If no daily_stats or player not found, build an "empty stats" response using live data or zeros
         if not player_doc:
-            await interaction.response.send_message("❌ Player not found in latest daily stats.", ephemeral=True)
-            return
+            # try to fetch from live players collection
+            p = players_col.find_one({"player_tag": tag})
+            if p:
+                # build an empty-style player_doc from p
+                player_doc = {
+                    "player_tag": p.get("player_tag"),
+                    "name": p.get("name"),
+                    "start_trophies": p.get("prev_trophies", p.get("trophies", 0)),
+                    "end_trophies": p.get("trophies", 0),
+                    "delta": p.get("trophies", 0) - p.get("prev_trophies", p.get("trophies", 0)),
+                    "offense_trophies": p.get("offense_trophies", 0),
+                    "offense_attacks": p.get("offense_attacks", 0),
+                    "defense_trophies": p.get("defense_trophies", 0),
+                    "defense_defenses": p.get("defense_defenses", 0),
+                }
+            else:
+                # fallback minimal empty
+                player_doc = {
+                    "player_tag": tag,
+                    "name": "Unknown",
+                    "start_trophies": 0,
+                    "end_trophies": 0,
+                    "delta": 0,
+                    "offense_trophies": 0,
+                    "offense_attacks": 0,
+                    "defense_trophies": 0,
+                    "defense_defenses": 0,
+                }
 
-        # Format message as requested
-        name_line = f"{player_doc.get('name')} | #{player_doc.get('player_tag')}"
+        # Build the exact format message you requested
+        header = f"{player_doc.get('name')} | #{player_doc.get('player_tag')}\n\n"
         overview = (
-            f"**Overview**\n"
-            f"- Start Trophies: {player_doc.get('start_trophies')}\n"
-            f"- End Trophies: {player_doc.get('end_trophies')}\n"
-            f"- Delta Trophies: {player_doc.get('delta')}\n"
+            "**Overview**\n"
+            f"- Start Trophies: {player_doc.get('start_trophies', 0)}\n"
+            f"- End Trophies: {player_doc.get('end_trophies', 0)}\n"
+            f"- Delta Trophies: {player_doc.get('delta', 0)}\n"
         )
 
-        # Construct small attacks/defenses block (summary)
-        attacks = player_doc.get("offense_attacks", 0)
-        defenses = player_doc.get("defense_defenses", 0)
-        attacks_troph = player_doc.get("offense_trophies", 0)
-        defenses_troph = player_doc.get("defense_trophies", 0)
+        # Build an attacks/defenses block with lines. We'll show per-day rows if available in last_doc,
+        # otherwise show aggregated rows (best-effort). For now, we try to extract an array of daily logs
+        attacks_lines = []
+        defenses_lines = []
 
-        attacks_block = f"Attacks: {attacks_troph} ({attacks} attacks)"
-        defenses_block = f"Defenses: -{defenses_troph} ({defenses} defenses)"
+        # If last_doc has 'players' list with this tag, it is per-day snapshot; but we want an array of "rows" for display.
+        # If last_doc is present and has players, try to fetch recent N daily_stats docs for this player and present their offense/defense numbers.
+        try:
+            docs = list(daily_stats_col.find({"players.player_tag": {"$regex": f"^{tag_upper}$", "$options": "i"}}).sort("date", -1).limit(7))
+            if docs:
+                docs = list(reversed(docs))  # oldest -> newest
+                for d in docs:
+                    p = next((x for x in d.get("players", []) if (x.get("player_tag","").upper() == tag_upper)), None)
+                    if p:
+                        # line example: " 306⁴     -320⁸"
+                        atk_t = p.get("offense_trophies", 0)
+                        atk_n = p.get("offense_attacks", 0)
+                        def_t = p.get("defense_trophies", 0)
+                        def_n = p.get("defense_defenses", 0)
+                        # Use superscript count if small number (optional), but we will append normal count after a superscript-like marker.
+                        # Discord doesn't support real superscript for numbers easily; keep format '306⁴' by appending the count as superscript-like unicode when possible.
+                        # We'll just format as "<trophies><sup_count>" for visual: e.g., "306⁴"
+                        def format_count(n):
+                            # simple mapping for digits 0-9 to superscripts (limited)
+                            sup_map = {"0":"⁰","1":"¹","2":"²","3":"³","4":"⁴","5":"⁵","6":"⁶","7":"⁷","8":"⁸","9":"⁹"}
+                            s = str(n)
+                            return "".join(sup_map.get(ch, ch) for ch in s)
+                        try:
+                            atk_sup = format_count(atk_n)
+                            def_sup = format_count(def_n)
+                        except Exception:
+                            atk_sup = str(atk_n)
+                            def_sup = str(def_n)
+                        attacks_lines.append(f" {atk_t}{atk_sup}")
+                        defenses_lines.append(f" {def_t}{def_sup}")
+        except Exception:
+            pass
 
-        embed = discord.Embed(title=name_line, description=f"{overview}\n```{attacks_block}\n{defenses_block}```")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        # If we couldn't build any per-row data, show a placeholder single row with aggregated counts
+        if not attacks_lines:
+            attacks_lines = [f" {player_doc.get('offense_trophies', 0)}{format_count(player_doc.get('offense_attacks', 0))}"]
+        if not defenses_lines:
+            defenses_lines = [f" {player_doc.get('defense_trophies', 0)}{format_count(player_doc.get('defense_defenses', 0))}"]
+
+        # Build code block by aligning pairs
+        code_lines = []
+        max_rows = max(len(attacks_lines), len(defenses_lines))
+        for i in range(max_rows):
+            a = attacks_lines[i] if i < len(attacks_lines) else " 0"
+            d = defenses_lines[i] if i < len(defenses_lines) else " 0"
+            # pad for visual alignment (simple)
+            code_lines.append(f"{a}     {d}")
+
+        code_block = "```Attacks   Defenses  \n" + "\n".join(code_lines) + "\n```"
+
+        content = header + overview + code_block
+        embed = discord.Embed(description=overview)
+        embed.title = f"{player_doc.get('name')} | #{player_doc.get('player_tag')}"
+        # Send as ephemeral to the user
+        await interaction.response.send_message(content, ephemeral=True)
 
 class LeaderboardView(ui.View):
     def __init__(self, players, color, name, page=0):
@@ -343,11 +489,11 @@ class LeaderboardView(ui.View):
         self.name = name
         self.page = page
 
-        # Add the player select dropdown (list all registered players)
+        # add player select
         try:
             self.add_item(PlayerSelect(players))
         except Exception as e:
-            print(f"⚠️ Could not add PlayerSelect: {e}")
+            print("⚠️ Could not add PlayerSelect:", e)
 
     def get_embed(self):
         start = self.page * LEADERBOARD_PAGE_SIZE
@@ -371,23 +517,24 @@ class LeaderboardView(ui.View):
         self.players = get_all_players()
         await interaction.edit_original_response(embed=self.get_embed(), view=self)
 
-    @ui.button(label="⬅️ Previous", style=discord.ButtonStyle.secondary)
+    # Minimal emoji-only buttons, all on same row (row=0)
+    @ui.button(label="⬅️", style=discord.ButtonStyle.secondary, row=0)
     async def prev_page(self, interaction, button):
         if self.page > 0:
             self.page -= 1
             await self.update_message(interaction)
 
-    @ui.button(label="➡️ Next", style=discord.ButtonStyle.secondary)
+    @ui.button(label="🔄", style=discord.ButtonStyle.primary, row=0)
+    async def refresh(self, interaction, button):
+        await self.update_message(interaction)
+
+    @ui.button(label="➡️", style=discord.ButtonStyle.secondary, row=0)
     async def next_page(self, interaction, button):
         if (self.page + 1) * LEADERBOARD_PAGE_SIZE < len(self.players):
             self.page += 1
             await self.update_message(interaction)
 
-    @ui.button(label="🔄 Refresh", style=discord.ButtonStyle.primary)
-    async def refresh(self, interaction, button):
-        await self.update_message(interaction)
-
-# ======================= DISCORD COMMANDS =======================
+# ======================= DISCORD COMMANDS (unchanged commands retained) =======================
 @bot.tree.command(name="link")
 @app_commands.describe(player_tag="Your Clash of Clans player tag (e.g. #8YJ98LV2C)")
 async def link(interaction: discord.Interaction, player_tag: str):
@@ -421,19 +568,21 @@ async def remove(interaction: discord.Interaction, player_tag: str):
 
 @bot.tree.command(name="leaderboard")
 @app_commands.describe(
-    color="Embed color (default blue)",
+    color="Embed color (hex without 0x, e.g. 3498db)",
     name="Leaderboard title",
-    force_reset="Set to True to reset offense/defense stats before showing leaderboard"
+    force_reset="Set to True to reset offense/defense stats before showing leaderboard",
+    day="Optional: view saved leaderboard of season day (integer)"
 )
 async def leaderboard(
     interaction: discord.Interaction,
-    color: str = "0x3498db",
+    color: str = "3498db",
     name: str = "🏆 Leaderboard",
-    force_reset: bool = False
+    force_reset: bool = False,
+    day: int = None
 ):
     await interaction.response.defer(thinking=True)
 
-    # ✅ Force reset if requested
+    # Force reset if requested (unchanged)
     if force_reset:
         players_col.update_many({}, {
             "$set": {
@@ -445,45 +594,56 @@ async def leaderboard(
         })
         print(f"⚡ Force reset done by {interaction.user} at {datetime.now().strftime('%Y-%m-%d %I:%M %p')}")
 
+    # parse color hex
     try:
-        color = int(color, 16)
-    except:
-        color = 0x3498db
+        color_int = int(color, 16)
+    except Exception:
+        color_int = 0x3498db
 
+    # If 'day' provided -> try to fetch daily_stats for that season_day
+    if day is not None:
+        doc = daily_stats_col.find_one({"season_day": int(day)})
+        if not doc:
+            await interaction.followup.send(f"❌ No saved data for season day {day}.", ephemeral=True)
+            return
+        # Build embed from doc players
+        players = doc.get("players", [])
+        # sort by end_trophies desc
+        players_sorted = sorted(players, key=lambda x: x.get("end_trophies", 0), reverse=True)
+        view = LeaderboardView(players_sorted, color_int, f"{name} - Day {day}", page=0)
+        await interaction.followup.send(embed=view.get_embed(), view=view)
+        return
+
+    # otherwise show live leaderboard (existing behavior)
     players = get_all_players()
-    view = LeaderboardView(players, color, name)
+    view = LeaderboardView(players, color_int, name)
     await interaction.followup.send(embed=view.get_embed(), view=view)
 
-# ======================= /player-history command (new) =======================
+# ======================= /player-history command (unchanged from earlier) =======================
 @bot.tree.command(name="player-history")
 @app_commands.describe(player_tag="Player tag (e.g. #R0VCQPCR)", days="Number of past days to show (default 28)")
 async def player_history(interaction: discord.Interaction, player_tag: str, days: int = 28):
     await interaction.response.defer(thinking=True)
-
     tag = player_tag.replace("#", "").upper()
-    # Fetch last N days of daily_stats
     docs = list(daily_stats_col.find({"players.player_tag": {"$regex": f"^{tag}$", "$options": "i"}}).sort("date", -1).limit(days))
     if not docs:
         await interaction.followup.send("❌ No history available for this player yet. Wait until a daily backup runs at 10:25 AM IST.", ephemeral=True)
         return
 
-    # Collect dates and end_trophies (most recent first -> reverse later)
     dates = []
     end_trophies = []
-    for d in reversed(docs):  # oldest->newest
+    for d in reversed(docs):
         dates.append(d.get("date"))
-        p = next((p for p in d.get("players", []) if p.get("player_tag", "").upper() == tag.upper()), None)
+        p = next((p for p in d.get("players", []) if p.get("player_tag", "").upper() == tag), None)
         if p:
             end_trophies.append(p.get("end_trophies", 0))
         else:
             end_trophies.append(None)
-
-    # Fallback if any None: replace with previous known or 0
     for i in range(len(end_trophies)):
         if end_trophies[i] is None:
             end_trophies[i] = end_trophies[i-1] if i > 0 else 0
 
-    # Make chart
+    # chart
     try:
         plt.figure(figsize=(8,4))
         plt.plot(dates, end_trophies, marker='o')
@@ -492,23 +652,20 @@ async def player_history(interaction: discord.Interaction, player_tag: str, days
         plt.ylabel("End-of-day Trophies")
         plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
-
         buf = io.BytesIO()
         plt.savefig(buf, format='png')
         buf.seek(0)
         plt.close()
 
-        # Get player name from most recent doc
         last_doc = docs[0]
-        last_player = next((p for p in last_doc.get("players", []) if p.get("player_tag", "").upper() == tag.upper()), None)
+        last_player = next((p for p in last_doc.get("players", []) if p.get("player_tag", "").upper() == tag), None)
         player_name = last_player.get("name") if last_player else tag
 
-        # Small summary
         total_delta = 0
         total_off_t = 0
         total_def_t = 0
         for d in docs:
-            p = next((p for p in d.get("players", []) if p.get("player_tag", "").upper() == tag.upper()), None)
+            p = next((p for p in d.get("players", []) if p.get("player_tag", "").upper() == tag), None)
             if p:
                 total_delta += p.get("delta", 0)
                 total_off_t += p.get("offense_trophies", 0)
@@ -523,7 +680,7 @@ async def player_history(interaction: discord.Interaction, player_tag: str, days
         print(f"❌ Error generating chart: {e}")
         await interaction.followup.send("❌ Error generating chart. Check server logs.", ephemeral=True)
 
-# ======================= BOT STARTUP =======================
+# ======================= BOT STARTUP (unchanged) =======================
 @bot.event
 async def on_ready():
     await bot.tree.sync()
