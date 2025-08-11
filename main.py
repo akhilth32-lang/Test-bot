@@ -1,22 +1,7 @@
-# PART 1/4
 import sys
 import types
-import os
-import io
-import requests
-import traceback
-import discord
-import asyncio
-from discord.ext import commands, tasks
-from discord import app_commands, ui, File
-from datetime import datetime, timedelta
-from pymongo import MongoClient
-from keep_alive import keep_alive  # keep-alive server you already use
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
-# ✅ audioop crash bypass (unchanged)
+# ✅ Bypass for audioop crashes (keeps your original bypass)
 sys.modules['audioop'] = types.ModuleType('audioop')
 sys.modules['audioop'].mul = lambda *args, **kwargs: None
 sys.modules['audioop'].add = lambda *args, **kwargs: None
@@ -28,7 +13,17 @@ sys.modules['audioop'].avgpp = lambda *args, **kwargs: 0
 sys.modules['audioop'].rms = lambda *args, **kwargs: 0
 sys.modules['audioop'].cross = lambda *args, **kwargs: 0
 
-keep_alive()  # start keepalive server (unchanged)
+import discord, asyncio, requests, os, traceback, io
+from discord.ext import commands, tasks
+from discord import app_commands, ui, File
+from datetime import datetime, timedelta, timezone
+from pymongo import MongoClient
+from keep_alive import keep_alive  # ✅ Using separate keep_alive file
+import matplotlib
+matplotlib.use('Agg')  # use non-interactive backend for servers
+import matplotlib.pyplot as plt
+
+keep_alive()  # ✅ Start Flask keepalive server
 
 # ======================= CONFIG =======================
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
