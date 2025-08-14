@@ -1,4 +1,4 @@
-# ---- Audioop bypass ----
+# ---- Audioop bypass (must be first!) ----
 import sys, types
 sys.modules['audioop'] = types.ModuleType('audioop')
 sys.modules['audioop'].mul = lambda *args, **kwargs: None
@@ -17,25 +17,22 @@ from discord.ext import commands
 import os
 import asyncio
 
-# ✅ Keep-alive server
+# ✅ Keep-alive server (Render)
 import keep_alive
 keep_alive.keep_alive()
 
-# Intents for member management
+# Bot intents
 intents = discord.Intents.default()
 intents.members = True
 intents.guilds = True
 intents.bans = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
-GUILD_ID = None
 
 @bot.event
 async def on_ready():
-    global GUILD_ID
-    print(f"✅ Logged in as {bot.user}")
+    print(f"✅ Logged in as {bot.user} ({bot.user.id})")
     for guild in bot.guilds:
-        GUILD_ID = guild.id
         print(f"Connected to: {guild.name} ({guild.id})")
     try:
         synced = await bot.tree.sync()
@@ -45,11 +42,23 @@ async def on_ready():
 
 @bot.tree.command(name="unban_all", description="Unban all banned members and send them a re-invite.")
 async def unban_all(interaction: discord.Interaction):
-    await interaction.response.send_message("⏳ Starting unban process... Please wait.", ephemeral=True)
+    await interaction.response.defer(ephemeral=False)  # Prevents timeout
 
-    guild = bot.get_guild(GUILD_ID)
+    guild = interaction.guild
     if not guild:
-        await interaction.followup.send("❌ Guild not found.")
+        await interaction.followup.send("❌ This command must be used inside a server.")
+        return
+
+    # Check bot permissions
+    if not guild.me.guild_permissions.ban_members:
+        await interaction.followup.send("❌ I don’t have permission to unban members.")
+        return
+
+    bans = await guild.bans()
+    total_bans = len(bans)
+
+    if total_bans == 0:
+        await interaction.followup.send("✅ No banned members found.")
         return
 
     try:
@@ -59,15 +68,13 @@ async def unban_all(interaction: discord.Interaction):
         await interaction.followup.send(f"❌ Could not create invite: {e}")
         return
 
-    bans = await guild.bans()
-    total_bans = len(bans)
-    await interaction.followup.send(f"🔹 Found {total_bans} banned members. Starting unban process...", ephemeral=True)
-
     success_count = 0
     fail_count = 0
 
-    for ban_entry in bans:
+    for i, ban_entry in enumerate(bans, start=1):
         user = ban_entry.user
+        print(f"🔄 Unbanning: {user} ({user.id})")  # Debug log
+
         try:
             await guild.unban(user, reason="Mass unban via bot")
             success_count += 1
@@ -81,16 +88,19 @@ async def unban_all(interaction: discord.Interaction):
                 )
             except:
                 fail_count += 1
-            await asyncio.sleep(1.5)
         except Exception as e:
             fail_count += 1
-            print(f"Error unbanning {user}: {e}")
-            await asyncio.sleep(1.5)
+            print(f"❌ Error unbanning {user}: {e}")
+
+        # Show progress
+        await interaction.followup.send(f"Progress: {i}/{total_bans} unbanned.", ephemeral=False)
+        await asyncio.sleep(1.5)  # Prevent rate limits
 
     await interaction.followup.send(
-        f"✅ Process complete!\n"
+        f"✅ Finished!\n"
         f"Unbanned: **{success_count}**\n"
         f"Failed to message: **{fail_count}**"
     )
 
+# Run bot
 bot.run(os.getenv("BOT_TOKEN"))
