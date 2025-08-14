@@ -1,12 +1,5 @@
-import discord
-from discord.ext import commands
-import os
-import asyncio
-from flask import Flask
-from threading import Thread
+# ---- Audioop bypass (must be first!) ----
 import sys, types
-
-# Audioop bypass
 sys.modules['audioop'] = types.ModuleType('audioop')
 sys.modules['audioop'].mul = lambda *args, **kwargs: None
 sys.modules['audioop'].add = lambda *args, **kwargs: None
@@ -18,7 +11,15 @@ sys.modules['audioop'].avgpp = lambda *args, **kwargs: 0
 sys.modules['audioop'].rms = lambda *args, **kwargs: 0
 sys.modules['audioop'].cross = lambda *args, **kwargs: 0
 
-# Flask keep-alive server
+# ---- Rest of imports ----
+import discord
+from discord.ext import commands
+import os
+import asyncio
+from flask import Flask
+from threading import Thread
+
+# ---- Flask keep-alive server ----
 app = Flask('')
 
 @app.route('/')
@@ -32,7 +33,7 @@ def keep_alive():
     t = Thread(target=run)
     t.start()
 
-# Bot setup
+# ---- Bot setup ----
 intents = discord.Intents.default()
 intents.guilds = True
 intents.guild_messages = True
@@ -45,12 +46,12 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
 
-# Ping command
+# ---- Ping command ----
 @bot.command()
 async def ping(ctx):
     await ctx.send(f"🏓 Pong! {round(bot.latency * 1000)}ms")
 
-# Unban all command
+# ---- Unban all command ----
 @bot.command()
 @commands.has_permissions(ban_members=True)
 async def unbanall(ctx):
@@ -76,5 +77,6 @@ async def unbanall(ctx):
 
     await ctx.send("✅ Finished unbanning all members.")
 
+# ---- Start bot ----
 keep_alive()
 bot.run(os.getenv("BOT_TOKEN"))
