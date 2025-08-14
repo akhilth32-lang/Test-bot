@@ -16,6 +16,7 @@ import discord
 from discord import app_commands
 import os
 import asyncio
+import time
 from flask import Flask
 from threading import Thread
 
@@ -43,7 +44,7 @@ tree = app_commands.CommandTree(bot)
 
 @bot.event
 async def on_ready():
-    await tree.sync()  # Sync slash commands globally
+    await tree.sync()
     print(f"✅ Logged in as {bot.user}")
     print("✅ Slash commands synced")
 
@@ -56,20 +57,23 @@ async def ping(interaction: discord.Interaction):
 @tree.command(name="unbanall", description="Unban all banned members and send them an invite")
 @app_commands.checks.has_permissions(ban_members=True)
 async def unbanall(interaction: discord.Interaction):
-    await interaction.response.send_message("🔄 Fetching bans...")
+    await interaction.response.defer(ephemeral=False)  # Allow long execution
 
+    start_time = time.time()
     bans = await interaction.guild.bans()
+
     if not bans:
         await interaction.followup.send("✅ No banned members found.")
         return
 
     invite = await interaction.channel.create_invite(max_age=0, max_uses=0)
-    await interaction.followup.send(f"🔄 Starting to unban {len(bans)} members...")
+    unbanned_count = 0
 
     for ban_entry in bans:
         user = ban_entry.user
         try:
             await interaction.guild.unban(user, reason="Mass unban command")
+            unbanned_count += 1
             try:
                 await user.send(f"You have been unbanned from **{interaction.guild.name}**!\nHere’s your invite: {invite.url}")
             except:
@@ -78,9 +82,13 @@ async def unbanall(interaction: discord.Interaction):
         except Exception as e:
             print(f"Error unbanning {user}: {e}")
 
-    await interaction.followup.send("✅ Finished unbanning all members.")
+    end_time = time.time()
+    total_time = round(end_time - start_time, 2)
+
+    await interaction.followup.send(
+        f"✅ Finished unbanning **{unbanned_count}** members in **{total_time} seconds**."
+    )
 
 # ---- Start Bot ----
 keep_alive()
 bot.run(os.getenv("BOT_TOKEN"))
-        
