@@ -1,4 +1,4 @@
-# ---- Audioop bypass (must be first!) ----
+# ---- Audioop bypass ----
 import sys, types
 sys.modules['audioop'] = types.ModuleType('audioop')
 sys.modules['audioop'].mul = lambda *args, **kwargs: None
@@ -17,10 +17,8 @@ from discord.ext import commands
 import os
 import asyncio
 
-# Import keep_alive so the bot stays online
+# ✅ Keep-alive server
 import keep_alive
-
-# Start the keep-alive server
 keep_alive.keep_alive()
 
 # Intents for member management
@@ -30,8 +28,7 @@ intents.guilds = True
 intents.bans = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
-
-GUILD_ID = None  # Will be set on ready event
+GUILD_ID = None
 
 @bot.event
 async def on_ready():
@@ -56,7 +53,6 @@ async def unban_all(interaction: discord.Interaction):
         return
 
     try:
-        # Create invite link (valid for 7 days, unlimited uses)
         invite = await list(guild.text_channels)[0].create_invite(max_age=604800, max_uses=0)
         invite_link = str(invite)
     except Exception as e:
@@ -73,24 +69,19 @@ async def unban_all(interaction: discord.Interaction):
     for ban_entry in bans:
         user = ban_entry.user
         try:
-            # Unban user
             await guild.unban(user, reason="Mass unban via bot")
             success_count += 1
-
-            # DM the user with message
             try:
-                message = (
+                await user.send(
                     f"Hello {user.name},\n\n"
                     f"Our server was hacked and many members were banned by mistake. 😔\n"
                     f"We’ve fixed the issue, and you’re welcome to join us again!\n\n"
                     f"Here’s your invite link: {invite_link}\n\n"
                     f"Hope to see you back soon! ❤️"
                 )
-                await user.send(message)
             except:
                 fail_count += 1
-
-            await asyncio.sleep(1.5)  # Delay to avoid rate limits
+            await asyncio.sleep(1.5)
         except Exception as e:
             fail_count += 1
             print(f"Error unbanning {user}: {e}")
@@ -102,5 +93,4 @@ async def unban_all(interaction: discord.Interaction):
         f"Failed to message: **{fail_count}**"
     )
 
-# Run bot
 bot.run(os.getenv("BOT_TOKEN"))
