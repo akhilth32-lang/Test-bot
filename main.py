@@ -13,84 +13,56 @@ sys.modules['audioop'].cross = lambda *args, **kwargs: 0
 
 import os
 import discord
-from discord import app_commands
 from discord.ext import commands
+from discord import app_commands
 from keep_alive import keep_alive
 
-# === CONFIG ===
+# ================== CONFIG ==================
+TOKEN = os.getenv("BOT_TOKEN")  # Render environment variable
 GUILD_ID = 1352037302590902462  # Your server ID
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# =============================================
 
-# === BOT SETUP ===
 intents = discord.Intents.default()
-intents.bans = True  # Needed to fetch bans
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    print(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")
+    print(f"✅ Logged in as {bot.user}")
     try:
-        guild = discord.Object(id=GUILD_ID)
-        bot.tree.copy_global_to(guild=guild)
-        await bot.tree.sync(guild=guild)
-        print(f"✅ Slash commands synced to guild {GUILD_ID}")
+        synced = await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
+        print(f"✅ Synced {len(synced)} command(s).")
     except Exception as e:
-        print(f"❌ Failed to sync commands: {e}")
+        print(f"❌ Sync failed: {e}")
 
-# === UNBAN ALL COMMAND ===
-@bot.tree.command(name="unban_all", description="Unban all members and send them an invite link.")
+@bot.tree.command(name="unban_all", description="Unban all banned members and send them an invite")
 async def unban_all(interaction: discord.Interaction):
-    await interaction.response.send_message("⏳ Starting unban process... Please wait.", ephemeral=False)
-
+    await interaction.response.send_message("⏳ Starting unban process... Please wait.", ephemeral=True)
+    
     guild = bot.get_guild(GUILD_ID)
-    if not guild:
-        await interaction.followup.send("❌ Guild not found. Check GUILD_ID.", ephemeral=True)
+    if guild is None:
+        await interaction.followup.send("❌ Bot is not in the server or GUILD_ID is wrong.", ephemeral=True)
         return
+    
+    # Create an invite
+    invite = await guild.text_channels[0].create_invite(max_age=86400, max_uses=0)
+    message_text = f"Someone hacked the server and banned everyone 😢\nPlease join again using this link: {invite.url}"
 
-    # Check permissions
-    me = guild.get_member(bot.user.id)
-    if not me.guild_permissions.ban_members:
-        await interaction.followup.send("❌ I don't have permission to unban members.", ephemeral=True)
-        return
-    if not me.guild_permissions.create_instant_invite:
-        await interaction.followup.send("❌ I don't have permission to create invite links.", ephemeral=True)
-        return
-
+    unbanned_count = 0
     try:
-        bans = await guild.bans()
-        total_bans = len(bans)
-        if total_bans == 0:
-            await interaction.followup.send("✅ No banned members found.")
-            return
-
-        invite = await guild.text_channels[0].create_invite(max_age=86400, max_uses=0, unique=True)
-        count = 0
-
-        for ban_entry in bans:
+        async for ban_entry in guild.bans():
             user = ban_entry.user
+            await guild.unban(user, reason="Mass unban requested")
+            unbanned_count += 1
             try:
-                await guild.unban(user, reason="Mass unban after server hack.")
-                try:
-                    await user.send(
-                        f"🚨 Someone hacked the server and banned all members!\n"
-                        f"Please join back: {invite.url}"
-                    )
-                except:
-                    pass  # Can't DM some users
+                await user.send(message_text)
+            except:
+                pass  # ignore if DMs are closed
 
-                count += 1
-                if count % 10 == 0:
-                    await interaction.followup.send(f"🔄 Unbanned {count}/{total_bans} members...", ephemeral=False)
-
-            except Exception as e:
-                print(f"Failed to unban {user}: {e}")
-
-        await interaction.followup.send(f"✅ Finished unbanning {count} members. Invite sent to DMs.")
-
+        await interaction.followup.send(f"✅ Finished unbanning {unbanned_count} members.", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
 
-# === KEEP ALIVE & RUN ===
+# Start keep_alive server
 keep_alive()
-bot.run(BOT_TOKEN)
+bot.run(TOKEN)
