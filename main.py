@@ -17,6 +17,12 @@ from discord.ext import commands
 import os
 import asyncio
 
+# Import keep_alive so the bot stays online
+import keep_alive
+
+# Start the keep-alive server
+keep_alive.keep_alive()
+
 # Intents for member management
 intents = discord.Intents.default()
 intents.members = True
