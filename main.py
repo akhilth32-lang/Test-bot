@@ -59,7 +59,7 @@ async def unban_all(interaction: discord.Interaction, log_channel_id: str = None
             try:
                 await user.send(message_text)
             except:
-                failed_dms.append(f"{user} ({user.id})")
+                failed_dms.append(user.id)  # store user ID only
         except Exception as e:
             print(f"❌ Failed to unban {user}: {e}")
 
@@ -72,7 +72,7 @@ async def unban_all(interaction: discord.Interaction, log_channel_id: str = None
                 for chunk in chunks:
                     await log_channel.send(
                         "**📜 Failed to DM these members:**\n" +
-                        "\n".join(chunk)
+                        "\n".join(f"<@{uid}>" for uid in chunk)  # clickable mentions
                     )
         except Exception as e:
             print(f"❌ Failed to log in channel: {e}")
