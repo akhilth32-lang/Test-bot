@@ -11,77 +11,100 @@ sys.modules['audioop'].avgpp = lambda *args, **kwargs: 0
 sys.modules['audioop'].rms = lambda *args, **kwargs: 0
 sys.modules['audioop'].cross = lambda *args, **kwargs: 0
 
-import discord
-from discord import app_commands
+# ========= IMPORTS ==========
+import discord, os, aiohttp, asyncio
 from discord.ext import commands
-import os
-from keep_alive import keep_alive
+from discord import app_commands
 
-TOKEN = os.getenv("BOT_TOKEN")
+# ========= ENV ==========
+TOKEN = os.getenv("BOT_TOKEN")  # token from Render environment
+BASE_URL = "https://api.clashk.ing"
 
+# ========= BOT ==========
 intents = discord.Intents.default()
-intents.bans = True
-intents.members = True
-intents.guilds = True
-
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# ========= API CALLS ==========
+async def search_player_by_name(name: str):
+    url = f"{BASE_URL}/player/search/{name}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                return await resp.json()
+            return None
+
+async def get_legends_data(tag: str):
+    url = f"{BASE_URL}/player/{tag.replace('#','')}/legends"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                return await resp.json()
+            return None
+
+# ========= AUTOCOMPLETE ==========
+async def player_autocomplete(interaction: discord.Interaction, current: str):
+    results = await search_player_by_name(current)
+    choices = []
+    if results and isinstance(results, list):
+        for player in results[:10]:  # limit to 10 suggestions
+            name = player.get("name")
+            tag = player.get("tag")
+            if name and tag:
+                choices.append(app_commands.Choice(name=f"{name} | {tag}", value=tag))
+    return choices
+
+# ========= COMMAND ==========
+@bot.tree.command(name="base", description="Get VIP base details for a player")
+@app_commands.describe(count="Base number", player="Search by IGN or tag")
+@app_commands.autocomplete(player=player_autocomplete)
+async def base(interaction: discord.Interaction, count: int, player: str):
+    await interaction.response.defer()
+
+    # If player is a tag → fetch directly
+    if player.startswith("#") or player[0].isalnum():
+        data = await get_legends_data(player)
+    else:
+        # Fallback (should not hit because autocomplete handles it)
+        results = await search_player_by_name(player)
+        if not results or not isinstance(results, list):
+            await interaction.followup.send("⚠️ No players found.")
+            return
+        tag = results[0]["tag"]
+        data = await get_legends_data(tag)
+
+    if not data:
+        await interaction.followup.send("⚠️ Could not fetch player details.")
+        return
+
+    player_name = data.get("name", "Unknown")
+    player_tag = data.get("tag", "N/A")
+    eod_trophies = data.get("start", "N/A")
+
+    # Format message
+    formatted = f"""
+** VIP base `{count}`**
+╰┈➤
+Recent base of **"{player_name}"**
+> EOD `{eod_trophies}` 🏆 
+> Original traps
+> Player Tag : `{player_tag}`
+
+**Clan Castle**
+> 1x Electro Titan, 1x Dragon and Archers!
+OR
+> 1x S drag + Archers!
+"""
+
+    await interaction.followup.send(formatted)
+
+# ========= RUN ==========
 @bot.event
 async def on_ready():
-    print(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")
+    print(f"✅ Logged in as {bot.user}")
     try:
         synced = await bot.tree.sync()
-        print(f"🔄 Synced {len(synced)} commands")
+        print(f"✅ Synced {len(synced)} commands")
     except Exception as e:
-        print(f"❌ Sync failed: {e}")
+        print(f"❌ Sync error: {e}")
 
-@bot.tree.command(name="unban_all", description="Unban all banned members and DM them an invite link. Optionally log failed DMs.")
-@app_commands.describe(log_channel_id="Optional channel ID to log members who couldn't be DMed")
-async def unban_all(interaction: discord.Interaction, log_channel_id: str = None):
-    await interaction.response.send_message("⏳ Starting unban process... Please wait.", ephemeral=False)
-
-    guild = interaction.guild
-    failed_dms = []
-
-    # Create invite link (permanent, unlimited uses)
-    invite = await interaction.channel.create_invite(max_age=0, max_uses=0)
-    message_text = (
-        f"Hello! 👋\n\n"
-        f"Our server was hacked and many members were banned by mistake.\n"
-        f"Please join us again using this link: {invite.url}\n\n"
-        f"We're sorry for the inconvenience ❤️"
-    )
-
-    async for ban_entry in guild.bans():
-        user = ban_entry.user
-        try:
-            await guild.unban(user, reason="Mass unban command")
-            try:
-                await user.send(message_text)
-            except:
-                failed_dms.append(user.id)  # store user ID only
-        except Exception as e:
-            print(f"❌ Failed to unban {user}: {e}")
-
-    # Log failed DMs if channel ID provided
-    if log_channel_id and failed_dms:
-        try:
-            log_channel = guild.get_channel(int(log_channel_id))
-            if log_channel:
-                chunks = [failed_dms[i:i+40] for i in range(0, len(failed_dms), 40)]
-                for chunk in chunks:
-                    await log_channel.send(
-                        "**📜 Failed to DM these members:**\n" +
-                        "\n".join(f"<@{uid}>" for uid in chunk)  # clickable mentions
-                    )
-        except Exception as e:
-            print(f"❌ Failed to log in channel: {e}")
-
-    await interaction.followup.send(
-        f"✅ Unban process completed.\n"
-        f"📨 Failed to DM: {len(failed_dms)} members.",
-        ephemeral=False
-    )
-
-keep_alive()
 bot.run(TOKEN)
