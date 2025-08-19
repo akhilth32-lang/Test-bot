@@ -16,6 +16,8 @@ import discord, os, aiohttp, asyncio
 from discord.ext import commands
 from discord import app_commands
 
+from keep_alive import keep_alive  # <-- Import keep_alive
+
 # ========= ENV ==========
 TOKEN = os.getenv("BOT_TOKEN")  # token from Render environment
 BASE_URL = "https://api.clashk.ing"
@@ -55,21 +57,31 @@ async def player_autocomplete(interaction: discord.Interaction, current: str):
 
 # ========= COMMAND ==========
 @bot.tree.command(name="base", description="Get VIP base details for a player")
-@app_commands.describe(count="Base number", player="Search by IGN or tag")
+@app_commands.describe(
+    count="Base number", 
+    player="Search by IGN or tag",
+    eod_trophy="End of Day trophies (optional)",
+    base_link="Base link (optional)"
+)
 @app_commands.autocomplete(player=player_autocomplete)
-async def base(interaction: discord.Interaction, count: int, player: str):
+async def base(
+    interaction: discord.Interaction, 
+    count: int, 
+    player: str, 
+    eod_trophy: int = None, 
+    base_link: str = None
+):
     await interaction.response.defer()
 
     # If player is a tag → fetch directly
     if player.startswith("#") or player[0].isalnum():
         data = await get_legends_data(player)
     else:
-        # Fallback (should not hit because autocomplete handles it)
         results = await search_player_by_name(player)
         if not results or not isinstance(results, list):
             await interaction.followup.send("⚠️ No players found.")
             return
-        tag = results[0]["tag"]
+        tag = results["tag"]
         data = await get_legends_data(tag)
 
     if not data:
@@ -78,14 +90,16 @@ async def base(interaction: discord.Interaction, count: int, player: str):
 
     player_name = data.get("name", "Unknown")
     player_tag = data.get("tag", "N/A")
-    eod_trophies = data.get("start", "N/A")
+    default_eod_trophies = data.get("start", "N/A")
 
-    # Format message
+    # Use the provided eod_trophy if given, otherwise fallback
+    final_eod = eod_trophy if eod_trophy is not None else default_eod_trophies
+
     formatted = f"""
 ** VIP base `{count}`**
 ╰┈➤
 Recent base of **"{player_name}"**
-> EOD `{eod_trophies}` 🏆 
+> EOD `{final_eod}` 🏆 
 > Original traps
 > Player Tag : `{player_tag}`
 
@@ -93,6 +107,7 @@ Recent base of **"{player_name}"**
 > 1x Electro Titan, 1x Dragon and Archers!
 OR
 > 1x S drag + Archers!
+{f'\n{base_link}' if base_link else ""}
 """
 
     await interaction.followup.send(formatted)
@@ -107,4 +122,8 @@ async def on_ready():
     except Exception as e:
         print(f"❌ Sync error: {e}")
 
+# Keep alive (good for hosting on repl.it, GitHub Codespaces, Render, etc)
+keep_alive()
+
 bot.run(TOKEN)
+                  
