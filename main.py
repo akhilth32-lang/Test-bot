@@ -104,9 +104,7 @@ Recent base of **"{player_name}"**
 > Player Tag : `{player_tag}`
 
 **Clan Castle**
-> 1x Electro Titan, 1x Dragon and Archers!
-OR
-> 1x S drag + Archers!
+> 2x Icegolem, 1x Furnace and 7 Archer!
 {f'\n{base_link}' if base_link else ""}
 """
 
